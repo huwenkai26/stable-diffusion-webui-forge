@@ -437,25 +437,6 @@ class Api:
 
     def text2imgapi(self, txt2imgreq: models.StableDiffusionTxt2ImgProcessingAPI):
         task_id = txt2imgreq.force_task_id or create_task_id("txt2img")
-        checkpoint_name = txt2imgreq.override_settings.get("sd_model_checkpoint", None)
-        if checkpoint_name is not None and checkpoint_name not in sd_models.checkpoint_aliases:
-            raise RuntimeError(f"model {checkpoint_name!r} not found")
-
-        refresh_memory = False
-        memory_keys = ['forge_inference_memory', 'forge_async_loading', 'forge_pin_shared_memory']
-        sd_model_checkpoint = shared.opts.sd_model_checkpoint
-        for k, v in txt2imgreq.override_settings.items():
-            shared.opts.set(k, v, is_api=True)
-            if k in memory_keys:
-                refresh_memory = True
-        if sd_model_checkpoint != checkpoint_name:
-            main_entry.checkpoint_change(checkpoint_name)
-        # shared.opts.save(shared.config_filename) --- applied in checkpoint_change()
-
-        if refresh_memory:
-            model_memory = main_entry.total_vram - shared.opts.forge_inference_memory
-            main_entry.refresh_memory_management_settings(model_memory, shared.opts.forge_async_loading,
-                                                          shared.opts.forge_pin_shared_memory)
 
         script_runner = scripts.scripts_txt2img
 
@@ -704,21 +685,26 @@ class Api:
         checkpoint_name = req.get("sd_model_checkpoint", None)
         if checkpoint_name is not None and checkpoint_name not in sd_models.checkpoint_aliases:
             raise RuntimeError(f"model {checkpoint_name!r} not found")
-
-        refresh_memory = False
+        
+        memory_changes = {}
         memory_keys = ['forge_inference_memory', 'forge_async_loading', 'forge_pin_shared_memory']
 
         for k, v in req.items():
-            shared.opts.set(k, v, is_api=True)
+            # options for memory/modules are set in their dedicated functions
             if k in memory_keys:
-                refresh_memory = True
+                mem_key = k[len('forge_'):] # remove 'forge_' prefix
+                memory_changes[mem_key] = v
+            elif k == 'forge_additional_modules':
+                main_entry.modules_change(v, refresh_params=False) # refresh_model_loading_parameters() --- applied in checkpoint_change()
+            # set all other options
+            else:
+                shared.opts.set(k, v, is_api=True)
 
         main_entry.checkpoint_change(checkpoint_name)
         # shared.opts.save(shared.config_filename) --- applied in checkpoint_change()
 
-        if refresh_memory:
-            model_memory = main_entry.total_vram - shared.opts.forge_inference_memory
-            main_entry.refresh_memory_management_settings(model_memory, shared.opts.forge_async_loading, shared.opts.forge_pin_shared_memory)
+        if memory_changes:
+            main_entry.refresh_memory_management_settings(**memory_changes)
 
         return
 
